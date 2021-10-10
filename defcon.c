@@ -325,6 +325,7 @@ static void usage(void)
     lprintf("   -M <filename>   : generate a makefile");
     lprintf("   -c <filename>   : set the input file (default: defcon.conf)");
     lprintf("   -p <prefix>     : set the prefix for generated key-value pairs");
+    lprintf("   -d              : dump all the keys to stdout in a parsable format");
     lprintf("   -s              : suppress \"undefined key\" warnings during parsing");
     lprintf("   -h              : print this message and exit");
     lprintf("   -v              : print version and exit");
@@ -340,8 +341,9 @@ static void version(void)
 int main(int argc, char **argv)
 {
     int opt, i;
-    const char *opt_string = "C:M:c:p:shv";
-    char input_filename[64] = "defcon.conf";
+    const char *opt_string = "C:M:c:p:dshv";
+    char input_filename[64] = "defcon.conf", value[128] = { 0 };
+    bool dump_keys = false;
     FILE *fp;
     struct defcon_def *def = NULL, *next_def = NULL;
 
@@ -355,6 +357,9 @@ int main(int argc, char **argv)
                 break;
             case 'p':
                 strncpy(config_key_prefix, optarg, sizeof(config_key_prefix));
+                break;
+            case 'd':
+                dump_keys = true;
                 break;
             case 's':
                 suppress_undefined_warnings = true;
@@ -388,6 +393,19 @@ int main(int argc, char **argv)
         fclose(fp);
     }
 
+    if(dump_keys) {
+        fprintf(stdout, "# This config will be parsed by defcon\n");
+        fprintf(stdout, "# without any serious problems but I'd\n");
+        fprintf(stdout, "# recommend editing it to make it readable\n");
+
+        for(def = def_begin; def; def = def->next) {
+            value_string(&def->value, value, sizeof(value));
+            fprintf(stdout, "%s = %s\n", def->name, value);
+        }
+        
+        goto safe_exit;
+    }
+
     fp = fopen(input_filename, "r");
     if(!fp)
         die("%s", strerror(errno));
@@ -413,6 +431,7 @@ int main(int argc, char **argv)
         }
     }
 
+safe_exit:
     for(def = def_begin; def; def = next_def) {
         next_def = def->next;
         free(def);
