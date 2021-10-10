@@ -343,7 +343,7 @@ int main(int argc, char **argv)
     const char *opt_string = "C:M:c:p:shv";
     char input_filename[64] = "defcon.conf";
     FILE *fp;
-    struct defcon_def *def = NULL;
+    struct defcon_def *def = NULL, *next_def = NULL;
 
     argv_0 = argv[0];
 
@@ -411,6 +411,11 @@ int main(int argc, char **argv)
                 generate_makefile(optarg);
                 break;
         }
+    }
+
+    for(def = def_begin; def; def = next_def) {
+        next_def = def->next;
+        free(def);
     }
 
     return 0;
