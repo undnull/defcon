@@ -62,8 +62,6 @@ struct defcon_value {
 
 struct defcon_def {
     char name[64];
-    char description[256];
-    char define[64];
     bool has_value;
     bool value_required;
     struct defcon_value value;
@@ -74,6 +72,7 @@ static char print_buffer[4096] = { 0 };
 static const char *argv_0 = "defcon";
 static struct defcon_def *def_begin = NULL;
 static bool suppress_undefined_warnings = false;
+static char config_key_prefix[64] = "";
 
 static void die(const char *fmt, ...)
 {
@@ -167,7 +166,7 @@ static struct defcon_def *get_def(const char *name)
     def->value.type = VALUE_TYPE_STRING;
 
     def->next = def_begin;
-    def_begin = def->next;
+    def_begin = def;
 
     return def;
 }
@@ -189,19 +188,8 @@ static int ini_callback_def(void *data, const char *section, const char *name, c
 {
     struct defcon_def *def = get_def(section);
 
-    if(!strcmp(name, "description")) {
-        strncpy(def->description, value, sizeof(def->description));
-        return 1;
-    }
-
-    if(!strcmp(name, "define")) {
-        strncpy(def->define, value, sizeof(def->define));
-        return 1;
-    }
-
     if(!strcmp(name, "type")) {
-        if(!(def->value.type = parse_type(value)))
-            lprintf("%s:%s:%s: warning: unable to parse: %s", data, def->name, name, value);
+        def->value.type = parse_type(value);
         return 1;
     }
 
@@ -215,7 +203,7 @@ static int ini_callback_def(void *data, const char *section, const char *name, c
         return 1;
     }
 
-    lprintf("%s:%s: warning: unknown key: %s", data, section, name);
+    lprintf("%s: %s: warning: unknown key: %s", data, section, name);
     return 0;
 }
 
@@ -231,14 +219,34 @@ static int init_callback_conf(void *data, const char *section, const char *name,
 
     parse_value(value, &def->value, &def->has_value);
     if(!def->has_value) {
-        lprintf("%s:%s: warning: unable to parse: %s", data, name, value);
+        lprintf("%s: %s: warning: unable to parse: %s", data, name, value);
         return 0;
     }
 
     return 1;
 }
 
-static void value_to_string(const struct defcon_value *src, char *s, size_t n)
+static void make_config_key(const char *name, char *s, size_t n)
+{
+    size_t i;
+    for(i = 0; i < n && *name; i++, name++) {
+        if(isalpha(*name)) {
+            s[i] = toupper(*name);
+            continue;
+        }
+
+        if(isdigit(*name)) {
+            s[i] = *name;
+            continue;
+        }
+
+        s[i] = '_';
+    }
+
+    s[(i < n) ? i : (n - 1)] = 0;
+}
+
+static void value_string(const struct defcon_value *src, char *s, size_t n)
 {
     switch(src->type) {
         case VALUE_TYPE_STRING:
@@ -266,7 +274,7 @@ static bool generate_c_header(const char *filename)
 {
     FILE *fp = NULL;
     struct defcon_def *def = NULL;
-    char string[128] = { 0 };
+    char config_key[64], value[128] = { 0 };
 
     if(!(fp = fopen(filename, "w"))) {
         lprintf("%s: warning: unable to open file", filename);
@@ -277,13 +285,9 @@ static bool generate_c_header(const char *filename)
     fprintf(fp, "#define __CONFIG_H__ 1\n");
 
     for(def = def_begin; def; def = def->next) {
-        if(!def->define[0]) {
-            lprintf("%s: warning: no definition string", def->name);
-            continue;
-        }
-
-        value_to_string(&def->value, string, sizeof(string));
-        fprintf(fp, "#define CONFIG_%s %s\n", def->define, string);
+        make_config_key(def->name, config_key, sizeof(config_key));
+        value_string(&def->value, value, sizeof(value));
+        fprintf(fp, "#define %s%s %s\n", config_key_prefix, config_key, value);
     }
 
     fprintf(fp, "#endif\n");
@@ -296,7 +300,7 @@ static bool generate_makefile(const char *filename)
 {
     FILE *fp = NULL;
     struct defcon_def *def = NULL;
-    char string[128] = { 0 };
+    char config_key[64], value[128] = { 0 };
 
     if(!(fp = fopen(filename, "w"))) {
         lprintf("%s: warning: unable to open file", filename);
@@ -304,13 +308,9 @@ static bool generate_makefile(const char *filename)
     }
 
     for(def = def_begin; def; def = def->next) {
-        if(!def->define[0]) {
-            lprintf("%s: warning: no definition string", def->name);
-            continue;
-        }
-
-        value_to_string(&def->value, string, sizeof(string));
-        fprintf(fp, "CONFIG_%s := %s\n", def->define, string);
+        make_config_key(def->name, config_key, sizeof(config_key));
+        value_string(&def->value, value, sizeof(value));
+        fprintf(fp, "%s%s := %s\n", config_key_prefix, config_key, value);
     }
 
     fclose(fp);
@@ -324,6 +324,7 @@ static void usage(void)
     lprintf("   -C <filename>   : generate a C header");
     lprintf("   -M <filename>   : generate a makefile");
     lprintf("   -c <filename>   : set the input file (default: defcon.conf)");
+    lprintf("   -p <prefix>     : set the prefix for generated key-value pairs");
     lprintf("   -s              : suppress \"undefined key\" warnings during parsing");
     lprintf("   -h              : print this message and exit");
     lprintf("   -v              : print version and exit");
@@ -339,7 +340,7 @@ static void version(void)
 int main(int argc, char **argv)
 {
     int opt, i;
-    const char *opt_string = "C:M:c:shv";
+    const char *opt_string = "C:M:c:p:shv";
     char input_filename[64] = "defcon.conf";
     FILE *fp;
     struct defcon_def *def = NULL;
@@ -351,6 +352,9 @@ int main(int argc, char **argv)
         switch(opt) {
             case 'c':
                 strncpy(input_filename, optarg, sizeof(input_filename));
+                break;
+            case 'p':
+                strncpy(config_key_prefix, optarg, sizeof(config_key_prefix));
                 break;
             case 's':
                 suppress_undefined_warnings = true;
@@ -376,7 +380,7 @@ int main(int argc, char **argv)
             continue;
         }
 
-        if(ini_parse_file(fp, &ini_callback_def, NULL) < 0) {
+        if(ini_parse_file(fp, &ini_callback_def, argv[i]) < 0) {
             lprintf("%s: warning: parse error", argv[i]);
             continue;
         }
